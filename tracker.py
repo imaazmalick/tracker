@@ -189,13 +189,13 @@ def main_loop():
                     print("<<< Check-out detected. IDLE MODE.")
                 is_tracking = False
 
-            # Sleep for 300 seconds (5 Minutes)
-            time.sleep(300)
+            # Sleep for 5 seconds (5 seconds)
+            time.sleep(5)
 
         except Exception as e:
             print(f"Critical Loop Error: {e}")
-            # If error occurs, retry after 1 minute instead of immediately
-            time.sleep(60)
+            # If error occurs, retry after 5 minute instead of immediately
+            time.sleep(5)
 
 # --- ENTRY POINT ---
 if __name__ == "__main__":
