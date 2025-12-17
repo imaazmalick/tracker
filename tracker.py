@@ -194,7 +194,8 @@ def main_loop():
 
         except Exception as e:
             print(f"Critical Loop Error: {e}")
-            time.sleep(5)
+            # If error occurs, retry after 1 minute instead of immediately
+            time.sleep(60)
 
 # --- ENTRY POINT ---
 if __name__ == "__main__":
