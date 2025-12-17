@@ -47,15 +47,14 @@ jobs:
       with:
         python-version: '3.10'
 
-    # 1. Install Tools (FPM for packaging, xdotool for logic)
+    # 1. Install Tools
     - name: Install System Tools
       run: |
         sudo apt-get update
         sudo apt-get install -y ruby ruby-dev rubygems build-essential xdotool python3-tk
         sudo gem install --no-document fpm
 
-    # 2. Install Python Deps & Build Binary
-    # FIXED: Added --hidden-import to include the missing Xorg drivers
+    # 2. Build Binary (With Fix for Xorg Crash)
     - name: Build Binary with PyInstaller
       run: |
         pip install -r requirements.txt
@@ -65,20 +64,27 @@ jobs:
           --hidden-import="pynput.mouse._xorg" \
           --name=hrm-tracker tracker.py
 
-    # 3. Prepare Directory Structure for Packaging
+    # 3. Prepare Folders & GENERATE DESKTOP FILE
     - name: Prepare Package Folders
       run: |
+        # Create folder structure
         mkdir -p build_root/usr/bin
         mkdir -p build_root/usr/share/applications
         
-        # Copy binary to /usr/bin/
+        # Copy the binary we just built
         cp dist/hrm-tracker build_root/usr/bin/
         
-        # Copy desktop shortcut to /usr/share/applications/
-        # (Make sure hrm-tracker.desktop exists in your repo root!)
-        cp hrm-tracker.desktop build_root/usr/share/applications/
+        # --- AUTO-GENERATE THE SHORTCUT FILE ---
+        # We use 'echo' to create the file from scratch right here
+        echo "[Desktop Entry]" > build_root/usr/share/applications/hrm-tracker.desktop
+        echo "Type=Application" >> build_root/usr/share/applications/hrm-tracker.desktop
+        echo "Name=HRM Tracker" >> build_root/usr/share/applications/hrm-tracker.desktop
+        echo "Comment=Employee Activity Tracker" >> build_root/usr/share/applications/hrm-tracker.desktop
+        echo "Exec=/usr/bin/hrm-tracker" >> build_root/usr/share/applications/hrm-tracker.desktop
+        echo "Terminal=false" >> build_root/usr/share/applications/hrm-tracker.desktop
+        echo "Categories=Utility;Office;" >> build_root/usr/share/applications/hrm-tracker.desktop
 
-    # 4. Build .DEB (Debian/Ubuntu/Mint)
+    # 4. Build .DEB (Ubuntu/Debian)
     - name: Build .DEB Package
       run: |
         fpm -s dir -t deb \
@@ -90,7 +96,7 @@ jobs:
           --maintainer "SoftexSolution <admin@softexsolution.com>" \
           .
 
-    # 5. Build .RPM (Fedora/RedHat/CentOS)
+    # 5. Build .RPM (Fedora/RedHat)
     - name: Build .RPM Package
       run: |
         fpm -s dir -t rpm \
@@ -102,7 +108,7 @@ jobs:
           --maintainer "SoftexSolution <admin@softexsolution.com>" \
           .
 
-    # 6. Upload All Linux Files
+    # 6. Upload Results
     - name: Upload Linux Packages
       uses: actions/upload-artifact@v4
       with:
