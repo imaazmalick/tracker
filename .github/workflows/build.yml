@@ -1,4 +1,4 @@
-name: Build Tracker for Windows & Linux
+name: Build All Packages (Exe, Deb, Rpm)
 
 on:
   push:
@@ -6,43 +6,108 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest]
-    
-    runs-on: ${{ matrix.os }}
-
+  # ------------------------------------
+  # JOB 1: WINDOWS BUILD
+  # ------------------------------------
+  build-windows:
+    runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4  # Updated to v4
-
+    - uses: actions/checkout@v4
+    
     - name: Set up Python
-      uses: actions/setup-python@v5 # Updated to v5
+      uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
-    # --- LINUX SPECIFIC SETUP ---
-    - name: Install Linux Dependencies
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y python3-tk python3-dev xdotool
-
-    # --- WINDOWS & LINUX DEPENDENCIES ---
-    - name: Install Python Libraries
+    - name: Install Dependencies
       run: |
         pip install -r requirements.txt
+        pip install pyinstaller
 
-    # --- BUILD COMMAND ---
-    - name: Build with PyInstaller
+    - name: Build Exe
       run: |
-        pyinstaller --onefile --noconsole --name=hrm_tracker_${{ runner.os }} tracker.py
+        pyinstaller --onefile --noconsole --name=hrm_tracker_win tracker.py
 
-    # --- UPLOAD ARTIFACTS (FIXED) ---
-    - name: Upload Build Artifact
-      uses: actions/upload-artifact@v4  # Updated to v4
+    - name: Upload Windows Exe
+      uses: actions/upload-artifact@v4
       with:
-        # We add runner.os to the name to create two separate zip files
-        # (tracker-build-Linux.zip and tracker-build-Windows.zip)
-        name: tracker-build-${{ runner.os }}
-        path: dist/
+        name: hrm-tracker-windows
+        path: dist/hrm_tracker_win.exe
+
+  # ------------------------------------
+  # JOB 2: LINUX BUILD (DEB & RPM)
+  # ------------------------------------
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    # 1. Install Tools (FPM for packaging, xdotool for logic)
+    - name: Install System Tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ruby ruby-dev rubygems build-essential xdotool python3-tk
+        sudo gem install --no-document fpm
+
+    # 2. Install Python Deps & Build Binary
+    # FIXED: Added --hidden-import to include the missing Xorg drivers
+    - name: Build Binary with PyInstaller
+      run: |
+        pip install -r requirements.txt
+        pip install pyinstaller
+        pyinstaller --onefile --noconsole \
+          --hidden-import="pynput.keyboard._xorg" \
+          --hidden-import="pynput.mouse._xorg" \
+          --name=hrm-tracker tracker.py
+
+    # 3. Prepare Directory Structure for Packaging
+    - name: Prepare Package Folders
+      run: |
+        mkdir -p build_root/usr/bin
+        mkdir -p build_root/usr/share/applications
+        
+        # Copy binary to /usr/bin/
+        cp dist/hrm-tracker build_root/usr/bin/
+        
+        # Copy desktop shortcut to /usr/share/applications/
+        # (Make sure hrm-tracker.desktop exists in your repo root!)
+        cp hrm-tracker.desktop build_root/usr/share/applications/
+
+    # 4. Build .DEB (Debian/Ubuntu/Mint)
+    - name: Build .DEB Package
+      run: |
+        fpm -s dir -t deb \
+          -n hrm-tracker \
+          -v 1.0.0 \
+          -C build_root \
+          -d "xdotool" \
+          --description "HRM Employee Tracker" \
+          --maintainer "SoftexSolution <admin@softexsolution.com>" \
+          .
+
+    # 5. Build .RPM (Fedora/RedHat/CentOS)
+    - name: Build .RPM Package
+      run: |
+        fpm -s dir -t rpm \
+          -n hrm-tracker \
+          -v 1.0.0 \
+          -C build_root \
+          -d "xdotool" \
+          --description "HRM Employee Tracker" \
+          --maintainer "SoftexSolution <admin@softexsolution.com>" \
+          .
+
+    # 6. Upload All Linux Files
+    - name: Upload Linux Packages
+      uses: actions/upload-artifact@v4
+      with:
+        name: hrm-tracker-linux-packages
+        path: |
+          *.deb
+          *.rpm
+          dist/hrm-tracker
