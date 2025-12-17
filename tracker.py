@@ -2,14 +2,14 @@ import time
 import requests
 import json
 import os
-import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox
 from pynput import mouse, keyboard
-import subprocess
+import pygetwindow as gw
 
 # ================= CONFIGURATION =================
+# YOUR PRODUCTION URL
 SERVER_URL = "https://hrm.softexsolution.com"
 CONFIG_FILE = "hrm_config.json"
 # =================================================
@@ -37,45 +37,18 @@ def load_config():
             return None
     return None
 
-# --- Helper: Get Active Window (Cross-Platform) ---
-def get_active_window_title():
-    current_os = sys.platform
-    try:
-        # 1. WINDOWS LOGIC
-        if current_os == "win32":
-            import pygetwindow as gw
-            window = gw.getActiveWindow()
-            if window:
-                return window.title
-            return "Unknown"
-
-        # 2. LINUX LOGIC (Requires xdotool)
-        elif current_os.startswith("linux"):
-            try:
-                # Use xdotool to get the active window name
-                result = subprocess.check_output(["xdotool", "getwindowfocus", "getwindowname"])
-                return result.decode("utf-8").strip()
-            except subprocess.CalledProcessError:
-                return "Unknown (Wayland/Error)"
-            except FileNotFoundError:
-                return "Error: xdotool not installed"
-        
-        # 3. MACOS LOGIC (Optional)
-        elif current_os == "darwin":
-            from AppKit import NSWorkspace
-            return NSWorkspace.sharedWorkspace().activeApplication()['NSApplicationName']
-
-    except Exception as e:
-        print(f"Window detection error: {e}")
-        return "Unknown"
-    
-    return "Unknown"
-
 # --- UI: Login Window ---
 def show_login():
     root = tk.Tk()
     root.title("HRM Tracker Setup")
     root.geometry("350x250")
+    
+    # Center the window on screen
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    x = (screen_width / 2) - (350 / 2)
+    y = (screen_height / 2) - (250 / 2)
+    root.geometry(f'350x250+{int(x)}+{int(y)}')
     
     lbl_status = tk.Label(root, text="HRM Employee Login", font=("Arial", 14, "bold"))
     lbl_status.pack(pady=15)
@@ -100,21 +73,30 @@ def show_login():
             return
 
         try:
-            res = requests.post(f"{SERVER_URL}/api/tracker/login", json={
+            url = f"{SERVER_URL}/api/tracker/login"
+            print(f"Connecting to: {url}")
+            
+            res = requests.post(url, json={
                 "email": email, "password": password
             })
             
             if res.status_code == 200:
                 data = res.json()
                 save_config(data)
-                messagebox.showinfo("Success", f"Welcome {data.get('name')}!")
+                messagebox.showinfo("Success", f"Welcome {data.get('name', 'Employee')}!\nTracker is now ready.")
                 root.destroy() 
             else:
-                messagebox.showerror("Error", "Login Failed")
+                try:
+                    err_msg = res.json().get('error', 'Login Failed')
+                except:
+                    err_msg = "Login Failed"
+                messagebox.showerror("Error", err_msg)
         except Exception as e:
-            messagebox.showerror("Connection Error", str(e))
+            messagebox.showerror("Connection Error", f"Could not connect to server.\nCheck your internet.\n\nError: {e}")
 
-    tk.Button(root, text="Connect", command=perform_login, bg="#007bff", fg="white").pack(pady=20)
+    btn = tk.Button(root, text="Connect & Start", command=perform_login, bg="#007bff", fg="white", width=20, height=2)
+    btn.pack(pady=20)
+    
     root.mainloop()
 
 # --- TRACKING: Input Listeners ---
@@ -127,45 +109,64 @@ def start_listeners():
         global key_events
         if is_tracking: key_events += 1
 
+    # Start listeners safely
     try:
-        mouse.Listener(on_move=on_move).start()
-        keyboard.Listener(on_press=on_press).start()
+        m_listener = mouse.Listener(on_move=on_move)
+        k_listener = keyboard.Listener(on_press=on_press)
+        m_listener.start()
+        k_listener.start()
     except Exception as e:
-        print(f"Listener Error: {e}")
+        print(f"Error starting input listeners: {e}")
 
-# --- MAIN LOOP ---
+# --- MAIN: Background Loop ---
 def main_loop():
     global is_tracking, mouse_events, key_events, employee_data
-    print(f"--- Agent Active: {employee_data.get('name')} ---")
+    
+    emp_name = employee_data.get('name', 'Unknown')
+    print(f"--- Agent Active for: {emp_name} ---")
     start_listeners()
 
     while True:
         try:
             emp_id = employee_data['employeeId']
 
-            # Check Status
+            # 1. Check Status (Polling)
             command = "STOP"
             try:
+                # Poll the API
                 res = requests.get(f"{SERVER_URL}/api/tracker/status?employeeId={emp_id}", timeout=5)
                 if res.status_code == 200:
                     command = res.json().get('command', 'STOP')
-            except:
-                pass
+            except requests.exceptions.ConnectionError:
+                print("Server unreachable. Waiting...")
+            except Exception as e:
+                print(f"Polling error: {e}")
 
+            # 2. Handle Logic
             if command == "START":
+                if not is_tracking:
+                    print(">>> Check-in detected. TRACKING STARTED.")
                 is_tracking = True
                 
-                # Get Window Title (Using the cross-platform function)
-                win_title = get_active_window_title()
+                # Get Active Window (Robust way)
+                win_title = "Unknown"
+                try:
+                    active_window = gw.getActiveWindow()
+                    if active_window and active_window.title:
+                        win_title = active_window.title.strip()
+                except:
+                    pass
 
+                # Check for VS Code or other IDEs
                 is_coding = False
                 if win_title:
-                    lower = win_title.lower()
-                    if "visual studio code" in lower or "code" in lower or ".py" in lower:
+                    lower_title = win_title.lower()
+                    if "visual studio code" in lower_title or "code" in lower_title or ".py" in lower_title or ".js" in lower_title:
                         is_coding = True
 
                 total_activity = mouse_events + key_events
 
+                # Send Data Payload
                 payload = {
                     "employeeId": emp_id,
                     "windowTitle": win_title,
@@ -175,28 +176,44 @@ def main_loop():
                 
                 try:
                     requests.post(f"{SERVER_URL}/api/tracker/update", json=payload, timeout=3)
-                    print(f"Logged: {win_title} | Score: {total_activity}")
+                    print(f"Logged: {win_title[:30]}... | Activity: {total_activity}")
                 except:
-                    pass
+                    print("Failed to send log update (Network glitch)")
 
+                # Reset Counters
                 mouse_events = 0
                 key_events = 0
+                
             else:
+                if is_tracking:
+                    print("<<< Check-out detected. IDLE MODE.")
                 is_tracking = False
 
-            time.sleep(5)
+            # Sleep for 300 seconds (5 Minutes)
+            time.sleep(300)
 
-        except KeyboardInterrupt:
-            break
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Critical Loop Error: {e}")
             time.sleep(5)
 
+# --- ENTRY POINT ---
 if __name__ == "__main__":
+    # 1. Try to load config
     employee_data = load_config()
+
+    # 2. If no config, Force Login UI
     if not employee_data:
         show_login()
+        # Reload after login closes
         employee_data = load_config()
-    
-    if employee_data:
+
+    # 3. If still no data (user closed window), exit
+    if not employee_data:
+        print("No user configuration found. Exiting.")
+        exit()
+
+    # 4. Start Tracker
+    try:
         main_loop()
+    except KeyboardInterrupt:
+        print("Agent Stopped.")
