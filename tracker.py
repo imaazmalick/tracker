@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import messagebox
 from pynput import mouse, keyboard
 import subprocess
+import ctypes # Required for the new Windows logic
 
 # ================= CONFIGURATION =================
 SERVER_URL = "https://hrm.softexsolution.com"
@@ -20,7 +21,6 @@ is_tracking = False
 mouse_events = 0
 key_events = 0
 
-# --- Helper: Save/Load Config ---
 def save_config(data):
     try:
         with open(CONFIG_FILE, 'w') as f:
@@ -37,36 +37,35 @@ def load_config():
             return None
     return None
 
-# --- Helper: Get Active Window (Cross-Platform) ---
+# --- NEW ROBUST WINDOW TITLE FUNCTION ---
 def get_active_window_title():
     current_os = sys.platform
     try:
-        # 1. WINDOWS LOGIC
+        # 1. WINDOWS LOGIC (Native API)
         if current_os == "win32":
-            import pygetwindow as gw
-            window = gw.getActiveWindow()
-            if window:
-                return window.title
-            return "Unknown"
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            buff = ctypes.create_unicode_buffer(length + 1)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
+            title = buff.value
+            return title if title else "Unknown"
 
-        # 2. LINUX LOGIC (Requires xdotool)
+        # 2. LINUX LOGIC
         elif current_os.startswith("linux"):
             try:
-                # Use xdotool to get the active window name
-                result = subprocess.check_output(["xdotool", "getwindowfocus", "getwindowname"])
-                return result.decode("utf-8").strip()
-            except subprocess.CalledProcessError:
-                return "Unknown (Wayland/Error)"
-            except FileNotFoundError:
-                return "Error: xdotool not installed"
+                # Using getactivewindow is better for Tabs
+                result = subprocess.check_output(["xdotool", "getactivewindow", "getwindowname"])
+                title = result.decode("utf-8").strip()
+                return title if title else "Unknown"
+            except:
+                return "Unknown"
         
-        # 3. MACOS LOGIC (Optional)
+        # 3. MACOS LOGIC
         elif current_os == "darwin":
             from AppKit import NSWorkspace
             return NSWorkspace.sharedWorkspace().activeApplication()['NSApplicationName']
 
-    except Exception as e:
-        print(f"Window detection error: {e}")
+    except Exception:
         return "Unknown"
     
     return "Unknown"
@@ -155,7 +154,6 @@ def main_loop():
             if command == "START":
                 is_tracking = True
                 
-                # Get Window Title (Using the cross-platform function)
                 win_title = get_active_window_title()
 
                 is_coding = False
