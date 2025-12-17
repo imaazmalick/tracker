@@ -14,10 +14,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4  # Updated to v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5 # Updated to v5
       with:
         python-version: '3.10'
 
@@ -38,9 +38,11 @@ jobs:
       run: |
         pyinstaller --onefile --noconsole --name=hrm_tracker_${{ runner.os }} tracker.py
 
-    # --- UPLOAD ARTIFACTS ---
+    # --- UPLOAD ARTIFACTS (FIXED) ---
     - name: Upload Build Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # Updated to v4
       with:
-        name: tracker-builds
+        # We add runner.os to the name to create two separate zip files
+        # (tracker-build-Linux.zip and tracker-build-Windows.zip)
+        name: tracker-build-${{ runner.os }}
         path: dist/
