@@ -8,11 +8,15 @@ import tkinter as tk
 from tkinter import messagebox
 from pynput import mouse, keyboard
 import subprocess
-import ctypes # Required for the new Windows logic
+import ctypes 
+import pyautogui  # <--- NEW: Required for screenshots
+import base64     # <--- NEW: To encode image
+import io         # <--- NEW: Memory buffer
 
 # ================= CONFIGURATION =================
 SERVER_URL = "https://hrm.softexsolution.com"
-CONFIG_FILE = "hrm_config.json"
+# Change this to save in User Home folder for safety
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), "hrm_config.json")
 # =================================================
 
 # Global Variables
@@ -37,11 +41,11 @@ def load_config():
             return None
     return None
 
-# --- NEW ROBUST WINDOW TITLE FUNCTION ---
+# --- ROBUST WINDOW TITLE FUNCTION ---
 def get_active_window_title():
     current_os = sys.platform
     try:
-        # 1. WINDOWS LOGIC (Native API)
+        # 1. WINDOWS LOGIC
         if current_os == "win32":
             hwnd = ctypes.windll.user32.GetForegroundWindow()
             length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
@@ -53,7 +57,6 @@ def get_active_window_title():
         # 2. LINUX LOGIC
         elif current_os.startswith("linux"):
             try:
-                # Using getactivewindow is better for Tabs
                 result = subprocess.check_output(["xdotool", "getactivewindow", "getwindowname"])
                 title = result.decode("utf-8").strip()
                 return title if title else "Unknown"
@@ -132,6 +135,25 @@ def start_listeners():
     except Exception as e:
         print(f"Listener Error: {e}")
 
+# --- HELPER: Take Screenshot ---
+def take_screenshot_base64():
+    try:
+        # Take screenshot
+        screenshot = pyautogui.screenshot()
+        
+        # Save to memory buffer as JPEG with 40% quality (Fast upload)
+        img_buffer = io.BytesIO()
+        screenshot.save(img_buffer, format='JPEG', quality=40)
+        
+        # Convert to Base64 string
+        img_str = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+        
+        # Add prefix so browser can display it directly
+        return f"data:image/jpeg;base64,{img_str}"
+    except Exception as e:
+        print(f"Screenshot Error: {e}")
+        return None
+
 # --- MAIN LOOP ---
 def main_loop():
     global is_tracking, mouse_events, key_events, employee_data
@@ -141,13 +163,17 @@ def main_loop():
     while True:
         try:
             emp_id = employee_data['employeeId']
-
-            # Check Status
+            
+            # --- 1. POLL STATUS ---
             command = "STOP"
+            should_take_ss = False # Default: No screenshot
+            
             try:
                 res = requests.get(f"{SERVER_URL}/api/tracker/status?employeeId={emp_id}", timeout=5)
                 if res.status_code == 200:
-                    command = res.json().get('command', 'STOP')
+                    data = res.json()
+                    command = data.get('command', 'STOP')
+                    should_take_ss = data.get('ss', False) # Read the flag
             except:
                 pass
 
@@ -164,18 +190,27 @@ def main_loop():
 
                 total_activity = mouse_events + key_events
 
+                # --- 2. HANDLE SCREENSHOT ---
+                ss_data = None
+                if should_take_ss:
+                    print(">>> Screenshot Requested by Admin...")
+                    ss_data = take_screenshot_base64()
+
+                # --- 3. SEND PAYLOAD ---
                 payload = {
                     "employeeId": emp_id,
                     "windowTitle": win_title,
                     "isCoding": is_coding,
-                    "activityScore": total_activity
+                    "activityScore": total_activity,
+                    "ss": ss_data # Send image string (or None)
                 }
                 
                 try:
-                    requests.post(f"{SERVER_URL}/api/tracker/update", json=payload, timeout=3)
-                    print(f"Logged: {win_title} | Score: {total_activity}")
-                except:
-                    pass
+                    # Increased timeout slightly in case of image upload
+                    requests.post(f"{SERVER_URL}/api/tracker/update", json=payload, timeout=10)
+                    print(f"Logged: {win_title} | Score: {total_activity} | SS: {'Yes' if ss_data else 'No'}")
+                except Exception as e:
+                    print(f"Upload failed: {e}")
 
                 mouse_events = 0
                 key_events = 0
