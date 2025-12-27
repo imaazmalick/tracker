@@ -26,6 +26,7 @@ jobs:
 
     - name: Build Exe
       run: |
+        # --noconsole prevents the black window from popping up
         pyinstaller --onefile --noconsole --name=hrm_tracker_win tracker.py
 
     - name: Upload Windows Exe
@@ -48,13 +49,14 @@ jobs:
         python-version: '3.10'
 
     # 1. Install Tools
+    # ADDED 'scrot' here (Critical for taking screenshots on Linux)
     - name: Install System Tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y ruby ruby-dev rubygems build-essential xdotool python3-tk
+        sudo apt-get install -y ruby ruby-dev rubygems build-essential xdotool python3-tk scrot
         sudo gem install --no-document fpm
 
-    # 2. Build Binary (With Fix for Xorg Crash)
+    # 2. Build Binary
     - name: Build Binary with PyInstaller
       run: |
         pip install -r requirements.txt
@@ -64,7 +66,7 @@ jobs:
           --hidden-import="pynput.mouse._xorg" \
           --name=hrm-tracker tracker.py
 
-    # 3. Prepare Folders & GENERATE DESKTOP FILE
+    # 3. Prepare Folders
     - name: Prepare Package Folders
       run: |
         # Create folder structure
@@ -74,8 +76,9 @@ jobs:
         # Copy the binary we just built
         cp dist/hrm-tracker build_root/usr/bin/
         
-        # --- AUTO-GENERATE THE SHORTCUT FILE ---
-        # We use 'echo' to create the file from scratch right here
+        # --- APP SHORTCUT (Start Menu Entry) ---
+        # Note: This is separate from the Auto-Start logic in the Python script.
+        # This one puts the icon in the User's Application Menu.
         echo "[Desktop Entry]" > build_root/usr/share/applications/hrm-tracker.desktop
         echo "Type=Application" >> build_root/usr/share/applications/hrm-tracker.desktop
         echo "Name=HRM Tracker" >> build_root/usr/share/applications/hrm-tracker.desktop
@@ -85,6 +88,7 @@ jobs:
         echo "Categories=Utility;Office;" >> build_root/usr/share/applications/hrm-tracker.desktop
 
     # 4. Build .DEB (Ubuntu/Debian)
+    # ADDED 'scrot' to dependencies so it installs automatically on user machine
     - name: Build .DEB Package
       run: |
         fpm -s dir -t deb \
@@ -92,6 +96,7 @@ jobs:
           -v 1.0.0 \
           -C build_root \
           -d "xdotool" \
+          -d "scrot" \
           --description "HRM Employee Tracker" \
           --maintainer "SoftexSolution <admin@softexsolution.com>" \
           .
@@ -104,6 +109,7 @@ jobs:
           -v 1.0.0 \
           -C build_root \
           -d "xdotool" \
+          -d "scrot" \
           --description "HRM Employee Tracker" \
           --maintainer "SoftexSolution <admin@softexsolution.com>" \
           .
