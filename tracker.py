@@ -13,22 +13,23 @@ import pyautogui
 import base64
 import io
 import sqlite3
-import winreg as reg if sys.platform == 'win32' else None 
 
-# ================= SECURITY & PATH CONFIGURATION =================
-# Define Hidden Paths based on OS
+# --- PLATFORM SPECIFIC IMPORTS ---
+# Prevents Linux build from failing on Windows modules
+if sys.platform == "win32":
+    import winreg as reg
+
+# ================= CONFIGURATION =================
 if sys.platform == "win32":
     # Windows: C:\Users\<User>\AppData\Roaming\SoftexHRM
     BASE_DIR = os.path.join(os.environ["APPDATA"], "SoftexHRM")
 else:
-    # Linux/Mac: /home/<user>/.config/softex_hrm
+    # Linux: /home/<user>/.config/softex_hrm
     BASE_DIR = os.path.join(os.path.expanduser("~"), ".config", "softex_hrm")
 
-# Ensure the hidden directory exists
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR, exist_ok=True)
 
-# File Paths
 CONFIG_FILE = os.path.join(BASE_DIR, "sys_config.dat") 
 DB_FILE = os.path.join(BASE_DIR, "sys_logs.db")
 SERVER_URL = "https://hrm.softexsolution.com"
@@ -44,11 +45,11 @@ is_tracking = False
 mouse_events = 0
 key_events = 0
 
-# ================= AUTO-STARTUP LOGIC (CROSS-PLATFORM) =================
+# ================= AUTO-STARTUP LOGIC =================
 def add_to_startup():
-    """Adds the script to startup (Works on Windows Registry & Linux Autostart)."""
+    """Adds the script to startup (Registry for Windows, Autostart for Linux)."""
     
-    # --- WINDOWS LOGIC ---
+    # --- WINDOWS REGISTRY STRATEGY ---
     if sys.platform == "win32":
         try:
             if getattr(sys, 'frozen', False):
@@ -64,24 +65,22 @@ def add_to_startup():
         except Exception as e:
             print(f"Windows Startup Failed: {e}")
 
-    # --- LINUX LOGIC ---
+    # --- LINUX AUTOSTART STRATEGY ---
     elif sys.platform.startswith("linux"):
         try:
-            # 1. Get paths
+            # 1. Get executable path
             if getattr(sys, 'frozen', False):
                 exe_path = sys.executable
             else:
-                # If running as python script
                 exe_path = f"{sys.executable} {os.path.abspath(__file__)}"
 
-            # 2. Define the Autostart Directory
+            # 2. Define Autostart Directory
             autostart_dir = os.path.join(os.path.expanduser("~"), ".config", "autostart")
             if not os.path.exists(autostart_dir):
                 os.makedirs(autostart_dir)
 
-            # 3. Create the .desktop file
+            # 3. Create .desktop file
             desktop_file = os.path.join(autostart_dir, "softex_hrm.desktop")
-            
             content = f"""[Desktop Entry]
 Type=Application
 Exec={exe_path}
@@ -98,7 +97,7 @@ Comment=Employee Activity Tracker
         except Exception as e:
             print(f"Linux Startup Failed: {e}")
 
-# ================= DATABASE & CORE LOGIC =================
+# ================= DATABASE ENGINE =================
 def init_db():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -155,6 +154,7 @@ def clear_logs(log_ids):
     except Exception as e:
         print(f"Clear Log Error: {e}")
 
+# ================= CONFIG MANAGERS =================
 def save_config(data):
     try:
         with open(CONFIG_FILE, 'w') as f:
@@ -171,6 +171,7 @@ def load_config():
             return None
     return None
 
+# ================= OS UTILITIES =================
 def get_active_window_title():
     current_os = sys.platform
     try:
@@ -197,9 +198,12 @@ def take_screenshot_base64():
     except:
         return None
 
+# ================= UI & MAIN LOOP =================
 def show_login():
     root = tk.Tk()
     root.title("Softex HRM Agent")
+    
+    # Center Window
     w, h = 350, 250
     ws, hs = root.winfo_screenwidth(), root.winfo_screenheight()
     x, y = (ws/2) - (w/2), (hs/2) - (h/2)
@@ -255,6 +259,7 @@ def main_loop():
     global is_tracking, mouse_events, key_events
     init_db()
     start_listeners()
+    
     last_upload = time.time()
     UPLOAD_INTERVAL = 300
     
@@ -313,7 +318,7 @@ def main_loop():
             time.sleep(10)
 
 if __name__ == "__main__":
-    add_to_startup() # Run Persistence
+    add_to_startup() # This runs the new Method 2 logic
     employee_data = load_config()
     if not employee_data:
         show_login()
