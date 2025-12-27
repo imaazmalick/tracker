@@ -1,6 +1,4 @@
 requests
-pygetwindow
 pynput
 pyautogui
-# tkinter is standard, no install needed
-pyinstaller
+pillow
