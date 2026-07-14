@@ -21,7 +21,7 @@ except ImportError:
 
 # ================= CONFIGURATION =================
 # YOUR PRODUCTION URL
-SERVER_URL = "https://hrm.softexsolution.com"
+SERVER_URL = "https://synkrox.com"
 CONFIG_FILE = "hrm_config.json"
 # =================================================
 
