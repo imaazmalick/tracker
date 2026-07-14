@@ -2,10 +2,12 @@ import time
 import requests
 import json
 import os
+import shutil
 import base64
 import io
 import platform
 import subprocess
+import datetime
 import threading
 import tkinter as tk
 from tkinter import messagebox
@@ -25,7 +27,16 @@ except Exception:
 # ================= CONFIGURATION =================
 # YOUR PRODUCTION URL
 SERVER_URL = "https://synkrox.com"
-CONFIG_FILE = "hrm_config.json"
+
+# Everything lives in a predictable, well-known folder instead of "wherever the
+# app's current working directory happened to be" (which varies depending on
+# whether it was launched from a .desktop file, a terminal, or a file manager).
+# This also gives the debug log a fixed, discoverable location — critical since
+# the app is built with --noconsole, so nothing printed to stdout is ever seen.
+APP_DIR = os.path.join(os.path.expanduser("~"), ".hrm_tracker")
+os.makedirs(APP_DIR, exist_ok=True)
+CONFIG_FILE = os.path.join(APP_DIR, "hrm_config.json")
+LOG_FILE = os.path.join(APP_DIR, "tracker_debug.log")
 # =================================================
 
 # Global Variables
@@ -34,13 +45,27 @@ is_tracking = False
 mouse_events = 0
 key_events = 0
 
+# --- Helper: Debug Logging ---
+# print() is invisible on a --noconsole build. This writes every important
+# event and failure reason to a log file the user/admin can actually open, so
+# "Unknown" / a score of 0 / a missing screenshot is diagnosable instead of a
+# silent black box.
+def log_debug(message):
+    line = f"[{datetime.datetime.now().isoformat(timespec='seconds')}] {message}"
+    print(line)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
 # --- Helper: Save/Load Config ---
 def save_config(data):
     try:
         with open(CONFIG_FILE, 'w') as f:
             json.dump(data, f)
     except Exception as e:
-        print(f"Error saving config: {e}")
+        log_debug(f"Error saving config: {e}")
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -50,6 +75,42 @@ def load_config():
         except:
             return None
     return None
+
+# --- Startup Diagnostics ---
+def log_environment_diagnostics():
+    """
+    Logs everything needed to diagnose why window-title detection, activity
+    scoring, or screenshots aren't working, without requiring console access.
+    """
+    log_debug(f"=== Tracker starting | Python {platform.python_version()} | {platform.platform()} ===")
+
+    if platform.system() == "Linux":
+        session_type = os.environ.get("XDG_SESSION_TYPE", "unknown")
+        desktop = os.environ.get("XDG_CURRENT_DESKTOP", "unknown")
+        log_debug(f"Session type: {session_type} | Desktop: {desktop}")
+
+        if session_type == "wayland":
+            log_debug(
+                "WARNING: Running under Wayland. xdotool (window titles), pynput's "
+                "global input hooks (activity score), and pyautogui/scrot "
+                "(screenshots) are all X11-only technologies and typically do NOT "
+                "work under Wayland — this is a Wayland security restriction, not "
+                "a bug in this app. For accurate tracking, log out and choose an "
+                "'Xorg' / 'X11' session at the login screen (on GNOME/GDM this is "
+                "usually a gear icon on the login screen next to your username)."
+            )
+
+        if shutil.which("xdotool") is None:
+            log_debug("WARNING: xdotool not found on PATH. Window titles will always show 'Unknown'. Install with: sudo dnf install xdotool  (or apt-get install xdotool)")
+        else:
+            log_debug("xdotool found on PATH.")
+
+        if shutil.which("scrot") is None:
+            log_debug("WARNING: scrot not found on PATH. Screenshot capture will likely fail. Install with: sudo dnf install scrot  (or apt-get install scrot)")
+        else:
+            log_debug("scrot found on PATH.")
+
+    log_debug(f"SCREENSHOT_AVAILABLE (pyautogui imported successfully): {SCREENSHOT_AVAILABLE}")
 
 # --- UI: Login Window ---
 def show_login():
@@ -88,24 +149,27 @@ def show_login():
 
         try:
             url = f"{SERVER_URL}/api/tracker/login"
-            print(f"Connecting to: {url}")
-            
+            log_debug(f"Connecting to: {url}")
+
             res = requests.post(url, json={
                 "email": email, "password": password
             })
-            
+
             if res.status_code == 200:
                 data = res.json()
                 save_config(data)
+                log_debug(f"Login successful for {data.get('name', 'Employee')} (employeeId={data.get('employeeId')})")
                 messagebox.showinfo("Success", f"Welcome {data.get('name', 'Employee')}!\nTracker is now ready.")
-                root.destroy() 
+                root.destroy()
             else:
                 try:
                     err_msg = res.json().get('error', 'Login Failed')
                 except:
                     err_msg = "Login Failed"
+                log_debug(f"Login failed: HTTP {res.status_code} — {err_msg}")
                 messagebox.showerror("Error", err_msg)
         except Exception as e:
+            log_debug(f"Login connection error: {e}")
             messagebox.showerror("Connection Error", f"Could not connect to server.\nCheck your internet.\n\nError: {e}")
 
     btn = tk.Button(root, text="Connect & Start", command=perform_login, bg="#007bff", fg="white", width=20, height=2)
@@ -123,14 +187,20 @@ def start_listeners():
         global key_events
         if is_tracking: key_events += 1
 
-    # Start listeners safely
+    # Start listeners safely. On Linux these open an X11 connection under the
+    # hood (pynput.mouse._xorg / pynput.keyboard._xorg) — under Wayland this
+    # either raises here or silently never fires, which is why activity score
+    # can get stuck at 0 with no visible error on a --noconsole build.
     try:
         m_listener = mouse.Listener(on_move=on_move)
         k_listener = keyboard.Listener(on_press=on_press)
         m_listener.start()
         k_listener.start()
+        log_debug("Input listeners (mouse + keyboard) started successfully.")
     except Exception as e:
-        print(f"Error starting input listeners: {e}")
+        log_debug(f"ERROR starting input listeners — activity score will stay 0: {e}")
+
+_window_detection_failure_logged = False
 
 # --- WINDOW TITLE: Active window detection (no extra pip package required) ---
 def get_active_window_title():
@@ -142,6 +212,7 @@ def get_active_window_title():
     even appear. Windows uses the built-in ctypes/Win32 API (no dependency);
     Linux shells out to xdotool, which the .deb/.rpm packages already depend on.
     """
+    global _window_detection_failure_logged
     try:
         system = platform.system()
         if system == "Windows":
@@ -152,20 +223,37 @@ def get_active_window_title():
             ctypes.windll.user32.GetWindowTextW(hwnd, buffer, length + 1)
             return buffer.value.strip() or "Unknown"
         elif system == "Linux":
-            out = subprocess.check_output(
+            result = subprocess.run(
                 ["xdotool", "getactivewindow", "getwindowname"],
-                stderr=subprocess.DEVNULL,
+                capture_output=True,
                 timeout=2,
             )
-            return out.decode("utf-8", errors="ignore").strip() or "Unknown"
-    except Exception:
-        pass
+            title = result.stdout.decode("utf-8", errors="ignore").strip()
+            if result.returncode != 0 and not _window_detection_failure_logged:
+                stderr = result.stderr.decode("utf-8", errors="ignore").strip()
+                log_debug(
+                    f"xdotool failed (exit {result.returncode}): {stderr or '(no stderr)'} "
+                    "— if this says 'cannot find display' or similar, this is almost "
+                    "certainly a Wayland session; see the Wayland warning above. This "
+                    "message only logs once to avoid flooding the log every 5 seconds."
+                )
+                _window_detection_failure_logged = True
+            return title or "Unknown"
+    except FileNotFoundError:
+        if not _window_detection_failure_logged:
+            log_debug("xdotool executable not found — cannot detect window titles on Linux without it.")
+            _window_detection_failure_logged = True
+    except Exception as e:
+        if not _window_detection_failure_logged:
+            log_debug(f"Window title detection failed: {e}")
+            _window_detection_failure_logged = True
     return "Unknown"
 
 # --- SCREENSHOT: Capture + Encode ---
 def capture_screenshot():
     """Grabs the screen and returns a compact base64 data URI, or None on failure."""
     if not SCREENSHOT_AVAILABLE:
+        log_debug("Screenshot requested but pyautogui is not available — see startup diagnostics above.")
         return None
     try:
         img = pyautogui.screenshot()
@@ -179,9 +267,10 @@ def capture_screenshot():
         buffer = io.BytesIO()
         img.save(buffer, format="JPEG", quality=55)
         encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+        log_debug(f"Screenshot captured successfully ({len(encoded)} base64 chars).")
         return f"data:image/jpeg;base64,{encoded}"
     except Exception as e:
-        print(f"Screenshot capture failed: {e}")
+        log_debug(f"Screenshot capture failed: {e}")
         return None
 
 # --- MAIN: Background Loop ---
@@ -189,7 +278,7 @@ def main_loop():
     global is_tracking, mouse_events, key_events, employee_data
 
     emp_name = employee_data.get('name', 'Unknown')
-    print(f"--- Agent Active for: {emp_name} ---")
+    log_debug(f"--- Agent Active for: {emp_name} ---")
     start_listeners()
 
     while True:
@@ -207,14 +296,14 @@ def main_loop():
                     command = status_data.get('command', 'STOP')
                     should_screenshot = bool(status_data.get('ss', False))
             except requests.exceptions.ConnectionError:
-                print("Server unreachable. Waiting...")
+                log_debug("Server unreachable. Waiting...")
             except Exception as e:
-                print(f"Polling error: {e}")
+                log_debug(f"Polling error: {e}")
 
             # 2. Handle Logic
             if command == "START":
                 if not is_tracking:
-                    print(">>> Check-in detected. TRACKING STARTED.")
+                    log_debug(">>> Check-in detected. TRACKING STARTED.")
                 is_tracking = True
 
                 # Get Active Window (Robust way)
@@ -243,7 +332,6 @@ def main_loop():
                     screenshot = capture_screenshot()
                     if screenshot:
                         log_entry["ss"] = screenshot
-                        print("Screenshot captured for this cycle.")
 
                 payload = {
                     "employeeId": emp_id,
@@ -254,9 +342,9 @@ def main_loop():
                     # Screenshot uploads are bigger than plain activity pings, so
                     # give this request more headroom than the 5s status poll.
                     requests.post(f"{SERVER_URL}/api/tracker/update", json=payload, timeout=15)
-                    print(f"Logged: {win_title[:30]}... | Activity: {total_activity}")
-                except:
-                    print("Failed to send log update (Network glitch)")
+                    log_debug(f"Logged: {win_title[:30]}... | Activity: {total_activity}")
+                except Exception as e:
+                    log_debug(f"Failed to send log update (Network glitch): {e}")
 
                 # Reset Counters
                 mouse_events = 0
@@ -264,19 +352,21 @@ def main_loop():
 
             else:
                 if is_tracking:
-                    print("<<< Check-out detected. IDLE MODE.")
+                    log_debug("<<< Check-out detected. IDLE MODE.")
                 is_tracking = False
 
             # Sleep for 5 seconds (5 seconds)
             time.sleep(5)
 
         except Exception as e:
-            print(f"Critical Loop Error: {e}")
+            log_debug(f"Critical Loop Error: {e}")
             # If error occurs, retry after 5 minute instead of immediately
             time.sleep(5)
 
 # --- ENTRY POINT ---
 if __name__ == "__main__":
+    log_environment_diagnostics()
+
     # 1. Try to load config
     employee_data = load_config()
 
@@ -288,11 +378,11 @@ if __name__ == "__main__":
 
     # 3. If still no data (user closed window), exit
     if not employee_data:
-        print("No user configuration found. Exiting.")
+        log_debug("No user configuration found. Exiting.")
         exit()
 
     # 4. Start Tracker
     try:
         main_loop()
     except KeyboardInterrupt:
-        print("Agent Stopped.")
+        log_debug("Agent Stopped.")
