@@ -4,19 +4,22 @@ import json
 import os
 import base64
 import io
+import platform
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import messagebox
 from pynput import mouse, keyboard
-import pygetwindow as gw
 
-# Screenshot capture is optional — if Pillow (or its screen-grab backend) isn't
-# available on this machine, the tracker keeps logging activity without screenshots
-# instead of crashing.
+# Screenshots and active-window detection are optional — if a package or system
+# tool is missing on this machine, the tracker keeps logging plain activity
+# instead of crashing. A crash here at import time is fatal: this app is built
+# with --noconsole, so an uncaught import error kills the process before the
+# login window ever appears, with no error message shown to the user.
 try:
-    from PIL import ImageGrab
+    import pyautogui
     SCREENSHOT_AVAILABLE = True
-except ImportError:
+except Exception:
     SCREENSHOT_AVAILABLE = False
 
 # ================= CONFIGURATION =================
@@ -129,13 +132,43 @@ def start_listeners():
     except Exception as e:
         print(f"Error starting input listeners: {e}")
 
+# --- WINDOW TITLE: Active window detection (no extra pip package required) ---
+def get_active_window_title():
+    """
+    Returns the title of the foreground window, or "Unknown" if it can't be
+    determined. Deliberately avoids PyGetWindow: its Linux backend needs
+    ewmh/python-xlib, which this app's build never installs, and importing it
+    unguarded is what used to crash the tracker before the login window could
+    even appear. Windows uses the built-in ctypes/Win32 API (no dependency);
+    Linux shells out to xdotool, which the .deb/.rpm packages already depend on.
+    """
+    try:
+        system = platform.system()
+        if system == "Windows":
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buffer, length + 1)
+            return buffer.value.strip() or "Unknown"
+        elif system == "Linux":
+            out = subprocess.check_output(
+                ["xdotool", "getactivewindow", "getwindowname"],
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            return out.decode("utf-8", errors="ignore").strip() or "Unknown"
+    except Exception:
+        pass
+    return "Unknown"
+
 # --- SCREENSHOT: Capture + Encode ---
 def capture_screenshot():
     """Grabs the screen and returns a compact base64 data URI, or None on failure."""
     if not SCREENSHOT_AVAILABLE:
         return None
     try:
-        img = ImageGrab.grab()
+        img = pyautogui.screenshot()
         # Keep the upload small and fast: cap width at 1280px and re-encode as JPEG.
         max_width = 1280
         if img.width > max_width:
@@ -185,13 +218,7 @@ def main_loop():
                 is_tracking = True
 
                 # Get Active Window (Robust way)
-                win_title = "Unknown"
-                try:
-                    active_window = gw.getActiveWindow()
-                    if active_window and active_window.title:
-                        win_title = active_window.title.strip()
-                except:
-                    pass
+                win_title = get_active_window_title()
 
                 # Check for VS Code or other IDEs
                 is_coding = False
