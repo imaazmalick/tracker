@@ -76,12 +76,17 @@ def load_config():
             return None
     return None
 
+# Set once at startup by log_environment_diagnostics() and read everywhere
+# else that needs to decide whether to even attempt an X11-only tool.
+IS_WAYLAND = False
+
 # --- Startup Diagnostics ---
 def log_environment_diagnostics():
     """
     Logs everything needed to diagnose why window-title detection, activity
     scoring, or screenshots aren't working, without requiring console access.
     """
+    global IS_WAYLAND
     log_debug(f"=== Tracker starting | Python {platform.python_version()} | {platform.platform()} ===")
 
     if platform.system() == "Linux":
@@ -90,14 +95,19 @@ def log_environment_diagnostics():
         log_debug(f"Session type: {session_type} | Desktop: {desktop}")
 
         if session_type == "wayland":
+            IS_WAYLAND = True
             log_debug(
-                "WARNING: Running under Wayland. xdotool (window titles), pynput's "
-                "global input hooks (activity score), and pyautogui/scrot "
-                "(screenshots) are all X11-only technologies and typically do NOT "
-                "work under Wayland — this is a Wayland security restriction, not "
-                "a bug in this app. For accurate tracking, log out and choose an "
-                "'Xorg' / 'X11' session at the login screen (on GNOME/GDM this is "
-                "usually a gear icon on the login screen next to your username)."
+                "WARNING: Running under Wayland — window titles and screenshots "
+                "will NOT work this session (activity score/mouse+keyboard count "
+                "usually still works). xdotool, scrot and pyautogui are all "
+                "X11-only; Wayland blocks them deliberately for security, and "
+                "there is no safe drop-in replacement for a background tracker "
+                "(GNOME's own screenshot/window APIs are access-denied to "
+                "ordinary apps, and the sanctioned portal API would prompt you "
+                "for permission on every single capture). FIX: log out, click "
+                "the gear icon on the GNOME login screen next to your username, "
+                "and choose 'GNOME on Xorg' before logging back in — no other "
+                "changes needed, everything below already supports X11."
             )
 
         if shutil.which("xdotool") is None:
@@ -238,6 +248,18 @@ def get_active_window_title():
                     "message only logs once to avoid flooding the log every 5 seconds."
                 )
                 _window_detection_failure_logged = True
+            elif result.returncode == 0 and not title and not _window_detection_failure_logged:
+                # xdotool can exit 0 with an empty title instead of erroring —
+                # seen under Wayland sessions where XWayland reports an active
+                # window with no usable title. Without this, every entry
+                # silently logs "Unknown" with no clue why.
+                log_debug(
+                    "xdotool ran successfully but returned an empty window title "
+                    "(exit 0, no output). This is a known Wayland/XWayland symptom, "
+                    f"not a crash — see the Wayland warning above{'' if IS_WAYLAND else ' if XDG_SESSION_TYPE=wayland'}. "
+                    "This message only logs once to avoid flooding the log every 5 seconds."
+                )
+                _window_detection_failure_logged = True
             return title or "Unknown"
     except FileNotFoundError:
         if not _window_detection_failure_logged:
@@ -249,11 +271,16 @@ def get_active_window_title():
             _window_detection_failure_logged = True
     return "Unknown"
 
+_screenshot_failure_logged = False
+
 # --- SCREENSHOT: Capture + Encode ---
 def capture_screenshot():
     """Grabs the screen and returns a compact base64 data URI, or None on failure."""
+    global _screenshot_failure_logged
     if not SCREENSHOT_AVAILABLE:
-        log_debug("Screenshot requested but pyautogui is not available — see startup diagnostics above.")
+        if not _screenshot_failure_logged:
+            log_debug("Screenshot requested but pyautogui is not available — see startup diagnostics above.")
+            _screenshot_failure_logged = True
         return None
     try:
         img = pyautogui.screenshot()
@@ -270,7 +297,29 @@ def capture_screenshot():
         log_debug(f"Screenshot captured successfully ({len(encoded)} base64 chars).")
         return f"data:image/jpeg;base64,{encoded}"
     except Exception as e:
-        log_debug(f"Screenshot capture failed: {e}")
+        if not _screenshot_failure_logged:
+            if IS_WAYLAND:
+                # pyautogui/Pillow raise their own message here mentioning
+                # "sudo apt install gnome-screenshot" unconditionally — wrong
+                # package manager on Fedora, and wouldn't fix pyautogui anyway
+                # (it only knows how to drive scrot, not gnome-screenshot).
+                # Replace it with guidance that's actually correct and actionable.
+                log_debug(
+                    "Screenshot capture failed: this is Wayland — scrot/pyautogui "
+                    "are X11-only and cannot be swapped for a Wayland equivalent "
+                    "here (GNOME's own screenshot API is access-denied to ordinary "
+                    "background apps, and the sanctioned portal API would prompt "
+                    "you for permission on every single capture). FIX: log out, "
+                    "click the gear icon on the GNOME login screen, and choose "
+                    "'GNOME on Xorg'. This message only logs once to avoid "
+                    "flooding the log every 5 seconds."
+                )
+            else:
+                log_debug(
+                    f"Screenshot capture failed: {e} — this message only logs "
+                    "once to avoid flooding the log every 5 seconds."
+                )
+            _screenshot_failure_logged = True
         return None
 
 # --- MAIN: Background Loop ---
